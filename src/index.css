@@ -1,0 +1,196 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  /* Forensic scanner custom palette */
+  --color-scanner-bg: #0A0E16;
+  --color-scanner-surface: #141B2A;
+  --color-scanner-border: #232D42;
+  --color-scanner-text: #ECEFF4;
+  --color-scanner-muted: #8D97AC;
+  --color-scanner-accent: #4C8DFF;
+  --color-risk-green: #35D0A6;
+  --color-risk-yellow: #F2B84B;
+  --color-risk-red: #EF5D5D;
+}
+
+/* Dark theme (default — forensic scanner is inherently dark) */
+:root {
+  --radius: 0.5rem;
+  --background: #0A0E16;
+  --foreground: #ECEFF4;
+  --card: #141B2A;
+  --card-foreground: #ECEFF4;
+  --popover: #141B2A;
+  --popover-foreground: #ECEFF4;
+  --primary: #4C8DFF;
+  --primary-foreground: #ffffff;
+  --secondary: #1C2536;
+  --secondary-foreground: #ECEFF4;
+  --muted: #1C2536;
+  --muted-foreground: #8D97AC;
+  --accent: #1C2536;
+  --accent-foreground: #ECEFF4;
+  --destructive: #EF5D5D;
+  --border: #232D42;
+  --input: #232D42;
+  --ring: #4C8DFF;
+  --chart-1: #4C8DFF;
+  --chart-2: #35D0A6;
+  --chart-3: #F2B84B;
+  --chart-4: #EF5D5D;
+  --chart-5: #A78BFA;
+  --sidebar: #0D1220;
+  --sidebar-foreground: #ECEFF4;
+  --sidebar-primary: #4C8DFF;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #1C2536;
+  --sidebar-accent-foreground: #ECEFF4;
+  --sidebar-border: #232D42;
+  --sidebar-ring: #4C8DFF;
+}
+
+/* Force dark theme for the entire app */
+.dark {
+  --background: #0A0E16;
+  --foreground: #ECEFF4;
+  --card: #141B2A;
+  --card-foreground: #ECEFF4;
+  --popover: #141B2A;
+  --popover-foreground: #ECEFF4;
+  --primary: #4C8DFF;
+  --primary-foreground: #ffffff;
+  --secondary: #1C2536;
+  --secondary-foreground: #ECEFF4;
+  --muted: #1C2536;
+  --muted-foreground: #8D97AC;
+  --accent: #1C2536;
+  --accent-foreground: #ECEFF4;
+  --destructive: #EF5D5D;
+  --border: #232D42;
+  --input: #232D42;
+  --ring: #4C8DFF;
+  --chart-1: #4C8DFF;
+  --chart-2: #35D0A6;
+  --chart-3: #F2B84B;
+  --chart-4: #EF5D5D;
+  --chart-5: #A78BFA;
+  --sidebar: #0D1220;
+  --sidebar-foreground: #ECEFF4;
+  --sidebar-primary: #4C8DFF;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #1C2536;
+  --sidebar-accent-foreground: #ECEFF4;
+  --sidebar-border: #232D42;
+  --sidebar-ring: #4C8DFF;
+}
+
+/* Font imports */
+@font-face {
+  font-family: 'Manrope';
+  font-style: normal;
+  font-weight: 200 800;
+  font-display: swap;
+  src: url('https://fonts.googleapis.com/css2?family=Manrope:wght@200..800&display=swap');
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: 'Manrope', system-ui, -apple-system, sans-serif;
+  }
+  button:not([disabled]),
+  [role="button"]:not([disabled]) {
+    cursor: pointer;
+  }
+  /* Monospace for data/code elements */
+  .font-mono,
+  code,
+  pre,
+  [data-mono] {
+    font-family: 'IBM Plex Mono', 'Menlo', 'Monaco', 'Consolas', monospace;
+  }
+  /* Visible focus states for keyboard navigation */
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-scanner-accent;
+  }
+}
+
+/* Custom scrollbar for the dark theme */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #0A0E16;
+}
+::-webkit-scrollbar-thumb {
+  background: #232D42;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #2D3A52;
+}
+
+/* Risk badge animation */
+@keyframes risk-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+.risk-pulse {
+  animation: risk-pulse 2s ease-in-out infinite;
+}
+
+/* Scan line animation for loading states */
+@keyframes scan-line {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100%); }
+}
+.scan-line {
+  animation: scan-line 1.5s ease-in-out infinite;
+}
+
+/* Glow effect for accent elements */
+.glow-accent {
+  box-shadow: 0 0 20px rgba(76, 141, 255, 0.15), 0 0 40px rgba(76, 141, 255, 0.05);
+}
