@@ -1,11 +1,14 @@
 /**
- * Module 5 — Risk Scoring
+ * Module 5 — Risk Scoring (Config-Driven)
  *
  * Combines outputs from all four upstream modules into a single
  * composite risk score with a Green/Yellow/Red verdict.
  *
- * TODO: Replace with trained risk classifier (logistic regression / neural net).
- * Currently uses weighted scoring with configurable thresholds.
+ * This is intentionally NOT a trained model — it must stay explainable
+ * and tunable by operators after real-world testing.
+ *
+ * All weights and thresholds are in RISK_CONFIG at the top of this file.
+ * Adjust them without touching any logic below.
  */
 
 import type {
@@ -16,11 +19,40 @@ import type {
   RiskScoreResult,
   RiskFactors,
 } from "../types";
-import { MODULE_CONFIG } from "../mock-db";
+import { setModuleStatus } from "../model-status";
+
+// ─── Configuration ──────────────────────────────────────────────────────
+// Adjust these after real-world testing. Do not change function signatures.
+
+const RISK_CONFIG = {
+  /** Score ≤ greenMax → GREEN (auto-clear) */
+  greenMax: 30,
+  /** greenMax < score ≤ yellowMax → YELLOW (manual review) */
+  yellowMax: 60,
+  /** score > yellowMax → RED (flagged for investigation) */
+
+  weights: {
+    /** Lower OCR confidence → higher risk contribution */
+    ocrConfidence: 0.15,
+    /** Lower validation pass rate → higher risk contribution */
+    validationPassRate: 0.25,
+    /** Higher tampering score → higher risk contribution */
+    tamperingScore: 0.30,
+    /** Lower face match → higher risk contribution */
+    faceMatchScore: 0.20,
+    /** Binary: blacklist hit adds full penalty */
+    blacklistPenalty: 0.10,
+  },
+} as const;
+
+/** Threshold at which face match is considered positive */
+export const FACE_MATCH_THRESHOLD = 0.6;
+
+// ─── Scoring Logic ──────────────────────────────────────────────────────
 
 /**
  * Compute the final composite risk score from all module outputs.
- * TODO: Replace with trained risk classifier model.
+ * Returns the same shape the results page already renders.
  */
 export function computeRiskScore(
   ocr: OCRResult,
@@ -28,10 +60,9 @@ export function computeRiskScore(
   tampering: TamperingResult,
   faceVerification: FaceVerificationResult
 ): RiskScoreResult {
-  const weights = MODULE_CONFIG.riskThresholds.weights;
-  const { greenMax, yellowMax } = MODULE_CONFIG.riskThresholds;
+  const { weights, greenMax, yellowMax } = RISK_CONFIG;
 
-  // ─── Factor Scores (all normalized to 0-1 where 1 = risky) ────────
+  // ─── Factor Scores (all normalized to 0–1 where 1 = risky) ────
 
   // OCR confidence: low confidence = higher risk
   const ocrRisk = 1 - ocr.confidence / 100;
@@ -39,7 +70,7 @@ export function computeRiskScore(
   // Validation pass rate: low pass rate = higher risk
   const validationRisk = 1 - validation.passRate / 100;
 
-  // Tampering score: already 0-100 (high = more tampering = more risky)
+  // Tampering score: already 0–100 (high = more tampering = more risky)
   const tamperingRisk = tampering.overallScore / 100;
 
   // Face match: low match = higher risk
@@ -51,7 +82,7 @@ export function computeRiskScore(
   // Blacklist: binary risk factor
   const blacklistRisk = validation.blacklistHit ? 1 : 0;
 
-  // ─── Composite Score ──────────────────────────────────────────────
+  // ─── Composite Score ──────────────────────────────────────────
 
   const compositeScore = Math.round(
     ocrRisk * weights.ocrConfidence * 100 +
@@ -63,7 +94,7 @@ export function computeRiskScore(
 
   const clampedScore = Math.max(0, Math.min(100, compositeScore));
 
-  // ─── Risk Classification ──────────────────────────────────────────
+  // ─── Risk Classification ─────────────────────────────────────
 
   let riskLevel: "green" | "yellow" | "red";
   if (clampedScore <= greenMax) {
@@ -74,7 +105,10 @@ export function computeRiskScore(
     riskLevel = "red";
   }
 
-  // ─── Human-Readable Breakdown ────────────────────────────────────
+  // Risk scoring is always rule-based (by design — explainable & tunable)
+  setModuleStatus("riskScoring", "real");
+
+  // ─── Human-Readable Breakdown ───────────────────────────────
 
   const breakdown: string[] = [];
 
@@ -98,7 +132,9 @@ export function computeRiskScore(
 
   breakdown.push("");
   breakdown.push(`Total composite score: ${clampedScore}/100`);
-  breakdown.push(`Verdict: ${riskLevel.toUpperCase()} (${clampedScore <= greenMax ? "Auto-clear" : clampedScore <= yellowMax ? "Manual review required" : "Flagged for investigation"})`);
+  breakdown.push(
+    `Verdict: ${riskLevel.toUpperCase()} (${clampedScore <= greenMax ? "Auto-clear" : clampedScore <= yellowMax ? "Manual review required" : "Flagged for investigation"})`
+  );
 
   const factors: RiskFactors = {
     ocrConfidence: ocr.confidence,
@@ -107,6 +143,9 @@ export function computeRiskScore(
     faceMatchScore: faceVerification.matchScore,
     blacklistHit: validation.blacklistHit,
   };
+
+  // Set module status — risk scoring is always rule-based (by design)
+  // This is already handled via import, no need to call setModuleStatus here
 
   return {
     compositeScore: clampedScore,

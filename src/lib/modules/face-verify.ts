@@ -1,157 +1,227 @@
 /**
- * Module 4 — Face Verification
+ * Module 4 — Face Verification (Upgraded)
  *
- * Compares a face from the document photo with a live capture/upload.
+ * Uses face-api.js (vladmandic fork) with:
+ *   - TinyFaceDetector for face detection
+ *   - FaceRecognitionNet (128-d ArcFace embeddings) for comparison
+ * Falls back to mock face comparison if models fail to load.
  *
- * TODO: Replace with ArcFace/FaceNet/InsightFace model for production use.
- * TODO: Integrate real face detection (MTCNN, RetinaFace, BlazeFace).
- * Currently uses basic canvas-based face region comparison.
+ * TODO: Replace with full InsightFace/ArcFace ONNX model for better accuracy.
+ * TODO: Fine-tune the cosine similarity threshold on real document/live photo pairs.
  */
 
+import * as faceapi from "@vladmandic/face-api";
 import type { FaceVerificationResult } from "../types";
+import { setModuleStatus } from "../model-status";
 
-// ─── Face Detection (Simplified) ────────────────────────────────────────
+// ─── Configuration ──────────────────────────────────────────────────────
 
-/**
- * Detect the most likely face region in an image using skin-tone heuristic.
- * TODO: Replace with MTCNN, RetinaFace, or BlazeFace model.
- */
-function detectFaceRegion(
-  imageData: ImageData,
-  width: number,
-  height: number
-): { x: number; y: number; w: number; h: number } | null {
-  // Simple skin-tone detection as face proxy
-  const skinPixels: { x: number; y: number }[] = [];
+/** Cosine similarity threshold for match decision. Tunable constant. */
+const MATCH_THRESHOLD = 0.6;
 
-  for (let y = 0; y < height; y += 3) {
-    for (let x = 0; x < width; x += 3) {
-      const idx = (y * width + x) * 4;
-      const r = imageData.data[idx];
-      const g = imageData.data[idx + 1];
-      const b = imageData.data[idx + 2];
+/** Path to face-api.js model files served from /public */
+const MODEL_BASE_PATH = "/models/face-api";
 
-      // Basic skin-tone detection (works across many skin tones)
-      if (
-        r > 60 && g > 40 && b > 20 &&
-        r > g && r > b &&
-        Math.abs(r - g) > 15 &&
-        r - b > 15
-      ) {
-        skinPixels.push({ x, y });
-      }
-    }
-  }
+// ─── Model Loading ──────────────────────────────────────────────────────
 
-  if (skinPixels.length < 20) return null;
-
-  // Find bounding box of largest skin-tone cluster
-  const minX = Math.min(...skinPixels.map((p) => p.x));
-  const maxX = Math.max(...skinPixels.map((p) => p.x));
-  const minY = Math.min(...skinPixels.map((p) => p.y));
-  const maxY = Math.max(...skinPixels.map((p) => p.y));
-
-  const w = maxX - minX;
-  const h = maxY - minY;
-
-  // Face should be roughly 1:1 to 1:1.5 aspect ratio
-  if (w < 20 || h < 20) return null;
-
-  return { x: minX, y: minY, w, h };
-}
-
-// ─── Face Feature Extraction (Simplified) ───────────────────────────────
+let modelsLoaded = false;
+let modelsLoading = false;
 
 /**
- * Extract a simple feature vector from a face region.
- * TODO: Replace with ArcFace/FaceNet embeddings (512-d or 128-d vectors).
+ * Load face-api.js models from /public/models/face-api/.
+ * Gracefully handles failure by setting mock mode.
+ * TODO: Add model versioning and cache-busting.
  */
-function extractFeatures(
-  imageData: ImageData,
-  width: number,
-  region: { x: number; y: number; w: number; h: number }
-): number[] {
-  const features: number[] = [];
-  const blockSize = 8;
-  const regionW = region.w;
-  const regionH = region.h;
-
-  // Divide face region into grid blocks and compute average color + gradient
-  for (let gy = 0; gy < 4; gy++) {
-    for (let gx = 0; gx < 4; gx++) {
-      const blockX = region.x + Math.floor((gx / 4) * regionW);
-      const blockY = region.y + Math.floor((gy / 4) * regionH);
-      let rSum = 0, gSum = 0, bSum = 0;
-      let gradX = 0, gradY = 0;
-      let count = 0;
-
-      for (let dy = 0; dy < blockSize; dy++) {
-        for (let dx = 0; dx < blockSize; dx++) {
-          const px = blockX + dx;
-          const py = blockY + dy;
-          if (px >= width || py >= imageData.height) continue;
-
-          const idx = (py * width + px) * 4;
-          rSum += imageData.data[idx];
-          gSum += imageData.data[idx + 1];
-          bSum += imageData.data[idx + 2];
-
-          if (dx < blockSize - 1) {
-            gradX += Math.abs(imageData.data[idx] - imageData.data[idx + 4]);
-          }
-          if (dy < blockSize - 1) {
-            gradY += Math.abs(imageData.data[idx] - imageData.data[(py + 1) * width * 4 + px * 4]);
-          }
-          count++;
+async function ensureModelsLoaded(): Promise<boolean> {
+  if (modelsLoaded) return true;
+  if (modelsLoading) {
+    // Wait for existing load attempt
+    return new Promise((resolve) => {
+      const check = setInterval(() => {
+        if (!modelsLoading) {
+          clearInterval(check);
+          resolve(modelsLoaded);
         }
-      }
-
-      if (count > 0) {
-        features.push(
-          rSum / count / 255,
-          gSum / count / 255,
-          bSum / count / 255,
-          gradX / count / 255,
-          gradY / count / 255
-        );
-      }
-    }
+      }, 100);
+    });
   }
 
-  return features;
+  modelsLoading = true;
+  try {
+    await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_BASE_PATH);
+    await faceapi.nets.faceLandmark68TinyNet.loadFromUri(MODEL_BASE_PATH);
+    await faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_BASE_PATH);
+
+    // Verify models work with a test inference
+    const testCanvas = document.createElement("canvas");
+    testCanvas.width = 128;
+    testCanvas.height = 128;
+    const testCtx = testCanvas.getContext("2d")!;
+    testCtx.fillStyle = "#888";
+    testCtx.fillRect(0, 0, 128, 128);
+
+    await faceapi
+      .detectSingleFace(testCanvas, new faceapi.TinyFaceDetectorOptions())
+      .withFaceLandmarks(true)
+      .withFaceDescriptor();
+
+    modelsLoaded = true;
+    console.log("[FaceVerify] face-api.js models loaded successfully");
+    setModuleStatus("faceVerification", "real");
+    return true;
+  } catch (err) {
+    console.warn("[FaceVerify] Failed to load face-api.js models:", err);
+    console.log("[FaceVerify] Falling back to mock face comparison");
+    setModuleStatus("faceVerification", "mock");
+    modelsLoading = false;
+    return false;
+  }
 }
 
-// ─── Similarity Comparison ──────────────────────────────────────────────
+// ─── Real Face Verification (face-api.js) ───────────────────────────────
 
-/**
- * Compare two face feature vectors using cosine similarity.
- * TODO: Replace with real face embedding comparison (L2 distance).
- */
-function cosineSimilarity(a: number[], b: number[]): number {
-  if (a.length !== b.length || a.length === 0) return 0;
+async function realFaceVerify(
+  docDataUrl: string,
+  liveDataUrl: string,
+  startTime: number
+): Promise<FaceVerificationResult> {
+  const docImg = await loadImage(docDataUrl);
+  const liveImg = await loadImage(liveDataUrl);
 
-  let dotProduct = 0;
-  let normA = 0;
-  let normB = 0;
+  // Detect faces with embeddings
+  const docDetection = await faceapi
+    .detectSingleFace(docImg, new faceapi.TinyFaceDetectorOptions())
+    .withFaceLandmarks(true)
+    .withFaceDescriptor();
 
-  for (let i = 0; i < a.length; i++) {
-    dotProduct += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
+  const liveDetection = await faceapi
+    .detectSingleFace(liveImg, new faceapi.TinyFaceDetectorOptions())
+    .withFaceLandmarks(true)
+    .withFaceDescriptor();
+
+  const docFaceDetected = !!docDetection;
+  const liveFaceDetected = !!liveDetection;
+
+  if (!docFaceDetected && !liveFaceDetected) {
+    return {
+      matchScore: 0,
+      documentFaceDetected: false,
+      liveFaceDetected: false,
+      verdict: "insufficient_data",
+      processingTime: Math.round(performance.now() - startTime),
+      details: "No face detected in either image",
+    };
   }
 
-  const denominator = Math.sqrt(normA) * Math.sqrt(normB);
-  if (denominator === 0) return 0;
+  if (!docFaceDetected) {
+    return {
+      matchScore: 0,
+      documentFaceDetected: false,
+      liveFaceDetected,
+      verdict: "insufficient_data",
+      processingTime: Math.round(performance.now() - startTime),
+      details: "No face detected in the document photo",
+    };
+  }
 
-  return dotProduct / denominator;
+  if (!liveFaceDetected) {
+    return {
+      matchScore: 0,
+      documentFaceDetected: true,
+      liveFaceDetected: false,
+      verdict: "insufficient_data",
+      processingTime: Math.round(performance.now() - startTime),
+      details: "No face detected in the live capture",
+    };
+  }
+
+  // Compute Euclidean distance between 128-d descriptors
+  const distance = faceapi.euclideanDistance(
+    docDetection.descriptor,
+    liveDetection.descriptor
+  );
+
+  // Convert distance to cosine-like similarity score (0-100)
+  // ArcFace descriptors: distance 0 = identical, ~1.2 = completely different
+  // Map: distance 0 → 100%, distance 1.2+ → 0%
+  const similarity = Math.max(0, Math.min(1, 1 - distance / 1.2));
+  const matchScore = Math.round(similarity * 100);
+
+  // Match decision using cosine similarity concept
+  // Convert euclidean to approximate cosine similarity
+  const cosineSim = 1 - (distance * distance) / 2;
+
+  const isMatch = cosineSim >= MATCH_THRESHOLD;
+
+  let verdict: "match" | "no_match" | "insufficient_data";
+  if (isMatch) verdict = "match";
+  else verdict = "no_match";
+
+  const details = isMatch
+    ? `Face similarity: ${matchScore}% — faces appear to match. Distance: ${distance.toFixed(3)}, cosine ≈ ${cosineSim.toFixed(3)} (threshold: ${MATCH_THRESHOLD})`
+    : `Face similarity: ${matchScore}% — faces appear different. Distance: ${distance.toFixed(3)}, cosine ≈ ${cosineSim.toFixed(3)} (threshold: ${MATCH_THRESHOLD})`;
+
+  return {
+    matchScore,
+    documentFaceDetected: true,
+    liveFaceDetected: true,
+    verdict,
+    processingTime: Math.round(performance.now() - startTime),
+    details,
+  };
 }
 
-// ─── Main Face Verification Function ────────────────────────────────────
+// ─── Mock Face Verification (fallback) ──────────────────────────────────
+
+async function mockFaceVerify(
+  docDataUrl: string,
+  liveDataUrl: string,
+  startTime: number
+): Promise<FaceVerificationResult> {
+  // Fallback: basic canvas-based comparison
+  const docImg = await loadImage(docDataUrl);
+  const liveImg = await loadImage(liveDataUrl);
+
+  const docCanvas = createCanvas(docImg);
+  const liveCanvas = createCanvas(liveImg);
+
+  const docCtx = docCanvas.getContext("2d")!;
+  const liveCtx = liveCanvas.getContext("2d")!;
+
+  docCtx.drawImage(docImg, 0, 0, docCanvas.width, docCanvas.height);
+  liveCtx.drawImage(liveImg, 0, 0, liveCanvas.width, liveCanvas.height);
+
+  // Simple histogram comparison
+  const docHist = getGrayscaleHistogram(docCtx.getImageData(0, 0, docCanvas.width, docCanvas.height));
+  const liveHist = getGrayscaleHistogram(liveCtx.getImageData(0, 0, liveCanvas.width, liveCanvas.height));
+
+  // Chi-squared distance
+  let chiSq = 0;
+  for (let i = 0; i < 256; i++) {
+    const diff = docHist[i] - liveHist[i];
+    const sum = docHist[i] + liveHist[i];
+    if (sum > 0) chiSq += (diff * diff) / sum;
+  }
+
+  // Map to 0-100 (lower chi-sq = more similar)
+  const similarity = Math.max(0, Math.min(100, Math.round(100 / (1 + chiSq * 0.05))));
+  const matchScore = similarity;
+
+  return {
+    matchScore,
+    documentFaceDetected: true,
+    liveFaceDetected: true,
+    verdict: matchScore >= 65 ? "match" : "no_match",
+    processingTime: Math.round(performance.now() - startTime),
+    details: `[Mock mode] Face similarity: ${matchScore}% — basic histogram comparison (install face-api.js models for ArcFace embeddings)`,
+  };
+}
+
+// ─── Main Entry Point ───────────────────────────────────────────────────
 
 /**
  * Compare faces between document photo and live capture.
- * TODO: Replace with ArcFace/FaceNet model for production-grade accuracy.
- * TODO: Integrate real face detection (MTCNN, RetinaFace).
+ * Uses real face-api.js models when available, falls back to mock.
  */
 export async function verifyFace(
   documentImageDataUrl: string,
@@ -160,104 +230,33 @@ export async function verifyFace(
   const startTime = performance.now();
 
   try {
-    // Load both images
-    const docImg = await loadImage(documentImageDataUrl);
-    const liveImg = await loadImage(liveImageDataUrl);
+    const hasRealModels = await ensureModelsLoaded();
 
-    // Create canvases
-    const docCanvas = createCanvas(docImg);
-    const liveCanvas = createCanvas(liveImg);
-
-    const docCtx = docCanvas.getContext("2d")!;
-    const liveCtx = liveCanvas.getContext("2d")!;
-
-    docCtx.drawImage(docImg, 0, 0, docCanvas.width, docCanvas.height);
-    liveCtx.drawImage(liveImg, 0, 0, liveCanvas.width, liveCanvas.height);
-
-    const docData = docCtx.getImageData(0, 0, docCanvas.width, docCanvas.height);
-    const liveData = liveCtx.getImageData(0, 0, liveCanvas.width, liveCanvas.height);
-
-    // Detect faces in both images
-    const docFace = detectFaceRegion(docData, docCanvas.width, docCanvas.height);
-    const liveFace = detectFaceRegion(liveData, liveCanvas.width, liveCanvas.height);
-
-    if (!docFace && !liveFace) {
-      return {
-        matchScore: 0,
-        documentFaceDetected: false,
-        liveFaceDetected: false,
-        verdict: "insufficient_data",
-        processingTime: Math.round(performance.now() - startTime),
-        details: "No face detected in either image",
-      };
+    if (hasRealModels) {
+      return await realFaceVerify(documentImageDataUrl, liveImageDataUrl, startTime);
+    } else {
+      return await mockFaceVerify(documentImageDataUrl, liveImageDataUrl, startTime);
     }
-
-    if (!docFace) {
-      return {
-        matchScore: 0,
-        documentFaceDetected: false,
-        liveFaceDetected: !!liveFace,
-        verdict: "insufficient_data",
-        processingTime: Math.round(performance.now() - startTime),
-        details: "No face detected in the document photo",
-      };
-    }
-
-    if (!liveFace) {
-      return {
-        matchScore: 0,
-        documentFaceDetected: true,
-        liveFaceDetected: false,
-        verdict: "insufficient_data",
-        processingTime: Math.round(performance.now() - startTime),
-        details: "No face detected in the live capture",
-      };
-    }
-
-    // Extract features from both face regions
-    const docFeatures = extractFeatures(docData, docCanvas.width, docFace);
-    const liveFeatures = extractFeatures(liveData, liveCanvas.width, liveFace);
-
-    // Compare similarity
-    const similarity = cosineSimilarity(docFeatures, liveFeatures);
-
-    // Map similarity to 0-100 score
-    // With basic features, similarity typically ranges 0.5-0.95
-    // We scale this to make the demo meaningful
-    const matchScore = Math.round(Math.max(0, Math.min(100, (similarity - 0.3) / 0.65 * 100)));
-
-    let verdict: "match" | "no_match" | "insufficient_data";
-    if (matchScore >= 65) verdict = "match";
-    else if (matchScore >= 40) verdict = "no_match"; // Low confidence - possible match but not enough
-    else verdict = "no_match";
-
-    const details = matchScore >= 65
-      ? `Face similarity: ${matchScore}% — faces appear to match. Cosine similarity: ${similarity.toFixed(3)}`
-      : matchScore >= 40
-      ? `Face similarity: ${matchScore}% — faces show some similarity but below threshold. Cosine similarity: ${similarity.toFixed(3)}`
-      : `Face similarity: ${matchScore}% — faces appear different. Cosine similarity: ${similarity.toFixed(3)}`;
-
-    return {
-      matchScore,
-      documentFaceDetected: true,
-      liveFaceDetected: true,
-      verdict,
-      processingTime: Math.round(performance.now() - startTime),
-      details,
-    };
   } catch (error) {
-    return {
-      matchScore: 0,
-      documentFaceDetected: false,
-      liveFaceDetected: false,
-      verdict: "insufficient_data",
-      processingTime: Math.round(performance.now() - startTime),
-      details: `Face verification error: ${error instanceof Error ? error.message : "Unknown error"}`,
-    };
+    console.error("[FaceVerify] Error:", error);
+    // Graceful fallback
+    setModuleStatus("faceVerification", "mock");
+    try {
+      return await mockFaceVerify(documentImageDataUrl, liveImageDataUrl, startTime);
+    } catch {
+      return {
+        matchScore: 0,
+        documentFaceDetected: false,
+        liveFaceDetected: false,
+        verdict: "insufficient_data",
+        processingTime: Math.round(performance.now() - startTime),
+        details: `Face verification error: ${error instanceof Error ? error.message : "Unknown error"}`,
+      };
+    }
   }
 }
 
-// ─── Utility ─────────────────────────────────────────────────────────────
+// ─── Utilities ──────────────────────────────────────────────────────────
 
 function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
@@ -276,4 +275,18 @@ function createCanvas(img: HTMLImageElement): HTMLCanvasElement {
   canvas.width = Math.floor(img.width * scale);
   canvas.height = Math.floor(img.height * scale);
   return canvas;
+}
+
+function getGrayscaleHistogram(imageData: ImageData): Float64Array {
+  const hist = new Float64Array(256);
+  const { data } = imageData;
+  let total = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    const gray = Math.round(0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]);
+    hist[gray]++;
+    total++;
+  }
+  // Normalize
+  for (let i = 0; i < 256; i++) hist[i] /= total;
+  return hist;
 }

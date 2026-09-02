@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { useNavigate } from "react-router";
 import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,7 @@ import {
   ChevronLeft,
   FileText,
   Trash2,
+  Loader2,
 } from "lucide-react";
 import { runPipeline, type PipelineProgress } from "@/lib/pipeline";
 import { ScanProgress } from "@/components/scanner/ScanProgress";
@@ -30,6 +31,12 @@ import {
   getScanResult,
   clearAuditTrail,
 } from "@/lib/mock-db";
+import {
+  getModuleStatus,
+  onModuleStatusChange,
+  type ModuleStatus,
+} from "@/lib/model-status";
+import { loadTamperingModel } from "@/lib/tampering-cnn";
 
 type View = "upload" | "scanning" | "results" | "history";
 
@@ -47,6 +54,19 @@ export default function Dashboard() {
   const [scanResult, setScanResult] = useState<ScanResult | null>(null);
   const [auditTrail, setAuditTrail] = useState<AuditEntry[]>(getAuditTrail());
   const [error, setError] = useState<string | null>(null);
+  const [moduleStatus, setModuleStatusState] = useState(getModuleStatus());
+
+  // Initialize model loading on mount
+  useEffect(() => {
+    // Load tampering CNN model (async, non-blocking)
+    loadTamperingModel();
+
+    // Subscribe to status changes
+    const unsub = onModuleStatusChange(() => {
+      setModuleStatusState({ ...getModuleStatus() });
+    });
+    return unsub;
+  }, []);
 
   const handleSignOut = async () => {
     await signOut();

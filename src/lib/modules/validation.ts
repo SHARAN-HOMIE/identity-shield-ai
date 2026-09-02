@@ -5,6 +5,7 @@
  * Currently uses rule-based checks and a local mock registry.
  */
 
+import { setModuleStatus } from "../model-status";
 import type {
   OCRResult,
   ValidationResult,
@@ -329,6 +330,9 @@ export async function validateDocument(ocr: OCRResult): Promise<ValidationResult
   const passRate = Math.round((passCount / checks.length) * 100);
 
   const docNumber = ocr.fields["Document Number"] || "";
+
+  // Validation is rule-based (not ML) — always "real" by design
+  setModuleStatus("validation", "real");
 
   return {
     checks,

@@ -11,6 +11,7 @@ import type {
   ExtractedFields,
   DocumentType,
 } from "../types";
+import { setModuleStatus } from "../model-status";
 
 // ─── MRZ Parser (ICAO 9303 format for passports) ─────────────────────────
 
@@ -244,6 +245,10 @@ export async function runOCR(file: File): Promise<OCRResult> {
   const fields = extractFields(rawText, detectedType, mrzData ?? undefined);
 
   const processingTime = performance.now() - startTime;
+
+  // Set module status — using Tesseract.js (real OCR)
+  // TODO: When PaddleOCR/EasyOCR ONNX is integrated, update to "real"
+  setModuleStatus("ocr", "real");
 
   return {
     rawText,

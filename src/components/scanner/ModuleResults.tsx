@@ -15,8 +15,30 @@ import {
   Eye,
   ChevronDown,
   ChevronUp,
+  Cpu,
+  Loader2,
 } from "lucide-react";
 import { useState } from "react";
+import { getModuleStatus, type ModuleStatus } from "@/lib/model-status";
+
+// ─── Mock Mode Badge ────────────────────────────────────────────────────
+
+function MockBadge({ module }: { module: keyof ReturnType<typeof getModuleStatus> }) {
+  const status = getModuleStatus()[module];
+  if (status === "real") return null;
+  if (status === "loading") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-md bg-scanner-muted/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-scanner-muted">
+        <Loader2 className="size-2.5 animate-spin" /> loading
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 rounded-md bg-risk-yellow/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-risk-yellow">
+      <Cpu className="size-2.5" /> mock mode
+    </span>
+  );
+}
 
 // ─── Status Icon Helper ─────────────────────────────────────────────────
 
@@ -94,6 +116,7 @@ function Section({
 export function OCRResults({ ocr }: { ocr: OCRResult }) {
   return (
     <Section icon={ScanLine} title="Module 1 — OCR Extraction" tag={`${ocr.confidence}% confidence`}>
+      <div className="mb-3"><MockBadge module="ocr" /></div>
       {/* Detected type */}
       <div className="mb-4 flex items-center gap-2">
         <span className="text-xs text-scanner-muted">Detected type:</span>
@@ -157,6 +180,7 @@ export function OCRResults({ ocr }: { ocr: OCRResult }) {
 export function ValidationResults({ validation }: { validation: ValidationResult }) {
   return (
     <Section icon={FileSearch} title="Module 2 — Document Validation" tag={`${validation.passRate}% pass rate`}>
+      <div className="mb-3"><MockBadge module="validation" /></div>
       <div className="space-y-2">
         {validation.checks.map((check) => (
           <div
@@ -201,6 +225,7 @@ export function TamperingResults({ tampering }: { tampering: TamperingResult }) 
 
   return (
     <Section icon={AlertOctagon} title="Module 3 — Tampering Detection" tag={`Score: ${tampering.overallScore}/100`}>
+      <div className="mb-3"><MockBadge module="tampering" /></div>
       <div className="grid gap-5 lg:grid-cols-2">
         {/* ELA Heatmap */}
         {tampering.elaHeatmap && (
@@ -285,6 +310,7 @@ export function FaceVerificationResults({
 
   return (
     <Section icon={Eye} title="Module 4 — Face Verification" tag={`${faceVerification.matchScore}% match`}>
+      <div className="mb-3"><MockBadge module="faceVerification" /></div>
       <div className="flex items-center gap-4">
         <div className={`rounded-xl ${vc.bg} px-4 py-3 text-center`}>
           <p className={`text-2xl font-bold ${vc.color}`}>{faceVerification.matchScore}%</p>

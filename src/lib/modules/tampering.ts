@@ -1,18 +1,31 @@
 /**
- * Module 3 — Tampering Detection
+ * Module 3 — Tampering Detection (Upgraded)
  *
- * Core feature of the system. Produces visual evidence (ELA heatmap)
- * alongside quantitative tampering scores.
+ * Combines:
+ *   1. Real CNN patch classification (from trained tampering CNN)
+ *   2. Error Level Analysis (ELA heatmap)
+ *   3. Metadata / EXIF analysis
+ *   4. Copy-move forgery detection
  *
- * TODO: Replace with trained tampering detection model (e.g., XceptionNet).
- * TODO: Replace ORB keypoints with real SIFT/SuperPoint model for copy-move.
- * Currently uses rule-based ELA diffing and basic canvas analysis.
+ * Falls back to mock mode if the trained CNN is not available.
+ * All existing ELA/metadata/copy-move logic is retained and weighted
+ * alongside the CNN scores.
+ *
+ * TODO: Replace with ensemble of trained tampering models.
+ * TODO: Add real SIFT/SuperPoint for copy-move detection.
  */
 
 import type {
   TamperingResult,
   TamperingSubCheck,
 } from "../types";
+import {
+  loadTamperingModel,
+  predictPatches,
+  extractPatchesFromDocument,
+  isTamperingModelReady,
+} from "../tampering-cnn";
+import { setModuleStatus } from "../model-status";
 
 // ─── Error Level Analysis (ELA) ─────────────────────────────────────────
 
@@ -32,10 +45,8 @@ async function computeELA(
   const ctx = canvas.getContext("2d")!;
   ctx.drawImage(img, 0, 0);
 
-  // Get original pixel data
   const originalData = ctx.getImageData(0, 0, canvas.width, canvas.height);
 
-  // Re-compress at specified quality
   const recompressedDataUrl = canvas.toDataURL("image/jpeg", quality / 100);
   const recompressedImg = await loadImage(recompressedDataUrl);
 
@@ -43,10 +54,8 @@ async function computeELA(
   ctx.drawImage(recompressedImg, 0, 0);
   const recompressedData = ctx.getImageData(0, 0, canvas.width, canvas.height);
 
-  // Compute difference
   const diffData = ctx.createImageData(canvas.width, canvas.height);
   let totalDiff = 0;
-  let maxDiff = 0;
   const diffValues: number[] = [];
 
   for (let i = 0; i < originalData.data.length; i += 4) {
@@ -56,19 +65,15 @@ async function computeELA(
     const avgDiff = (rDiff + gDiff + bDiff) / 3;
 
     totalDiff += avgDiff;
-    if (avgDiff > maxDiff) maxDiff = avgDiff;
     diffValues.push(avgDiff);
 
-    // ELA heatmap: brighter = more error = more likely tampered
-    // Scale for visibility
     const scaled = Math.min(255, avgDiff * 5);
-    diffData.data[i] = scaled;     // R
-    diffData.data[i + 1] = scaled * 0.3; // G (suppress green for red-ish tint)
-    diffData.data[i + 2] = scaled * 0.1; // B
-    diffData.data[i + 3] = 255;    // A
+    diffData.data[i] = scaled;
+    diffData.data[i + 1] = scaled * 0.3;
+    diffData.data[i + 2] = scaled * 0.1;
+    diffData.data[i + 3] = 255;
   }
 
-  // Draw heatmap
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -76,18 +81,13 @@ async function computeELA(
 
   const heatmap = canvas.toDataURL("image/png");
 
-  // Calculate tampering score from ELA
   const pixelCount = diffValues.length;
   const avgDiff = totalDiff / pixelCount;
-
-  // Calculate standard deviation of differences
   const variance =
     diffValues.reduce((sum, v) => sum + Math.pow(v - avgDiff, 2), 0) / pixelCount;
   const stdDev = Math.sqrt(variance);
 
-  // Higher std dev means some areas differ much more (likely tampered regions)
-  // Score: 0 (uniform = clean) to 100 (highly variable = tampered)
-  let score: string | number = Math.min(100, Math.round(stdDev * 2.5));
+  const score = Math.min(100, Math.round(stdDev * 2.5));
 
   const details = avgDiff < 2
     ? "Very low error levels — image appears uniformly compressed (likely original)"
@@ -102,10 +102,6 @@ async function computeELA(
 
 // ─── Metadata / EXIF Check ──────────────────────────────────────────────
 
-/**
- * Analyze image metadata for signs of editing.
- * TODO: Replace with comprehensive metadata database and trained classifier.
- */
 async function analyzeMetadata(
   file: File
 ): Promise<{ flags: string[]; score: number; details: string }> {
@@ -113,11 +109,9 @@ async function analyzeMetadata(
   let score = 0;
 
   try {
-    // Read raw EXIF data from the file
     const arrayBuffer = await file.arrayBuffer();
     const view = new DataView(arrayBuffer);
 
-    // Check for JPEG EXIF marker (FF E1)
     const isJPEG = view.getUint16(0) === 0xffd8;
     const hasEXIF = isJPEG && view.getUint16(2) === 0xffe1;
 
@@ -131,33 +125,22 @@ async function analyzeMetadata(
       }
     }
 
-    // Read file name for suspicious patterns
     const fileName = file.name.toLowerCase();
     if (fileName.includes("edit") || fileName.includes("copy") || fileName.includes("modified")) {
       flags.push(`Filename "${file.name}" suggests the file may be a copy or edit`);
       score += 15;
     }
 
-    // Check file size anomalies
     const fileSizeKB = file.size / 1024;
     if (fileSizeKB < 10) {
       flags.push("Unusually small file size — may be a thumbnail or low-quality image");
       score += 10;
     }
 
-    // For JPEG, try to read basic EXIF segments
     if (hasEXIF) {
       try {
-        // Read EXIF header
         const exifOffset = 4;
-        const exifByteOrder = view.getUint16(exifOffset);
-        const isLittleEndian = exifByteOrder === 0x4949;
-
-        // Try to find Software tag (0x0131) and DateTime (0x0132)
         const segmentLength = view.getUint16(exifOffset + 2);
-        const exifEnd = exifOffset + 2 + segmentLength;
-
-        // Search for common editing software signatures
         const exifBytes = new Uint8Array(arrayBuffer, exifOffset, segmentLength);
         const exifString = new TextDecoder("ascii", { fatal: false }).decode(exifBytes);
 
@@ -174,7 +157,6 @@ async function analyzeMetadata(
           }
         }
 
-        // Check for timestamp at offset — if very old or future
         if (exifString.includes("20") && exifString.includes(":")) {
           const dateMatch = exifString.match(/(\d{4}):(\d{2}):(\d{2})\s+(\d{2}):(\d{2}):(\d{2})/);
           if (dateMatch) {
@@ -201,7 +183,6 @@ async function analyzeMetadata(
       }
     }
 
-    // Check if it's a PNG (often created by screenshot tools)
     if (!isJPEG) {
       const isPNG = view.getUint16(0) === 0x8950;
       if (isPNG) {
@@ -215,30 +196,22 @@ async function analyzeMetadata(
   }
 
   score = Math.min(100, score);
-
-  const details =
-    flags.length === 0
-      ? "No metadata anomalies detected"
-      : `${flags.length} metadata flag(s) raised`;
+  const details = flags.length === 0
+    ? "No metadata anomalies detected"
+    : `${flags.length} metadata flag(s) raised`;
 
   return { flags, score, details };
 }
 
-// ─── Basic Region Analysis (Copy-Move Forgery Detection) ────────────────
+// ─── Copy-Move Forgery Detection ────────────────────────────────────────
 
-/**
- * Basic keypoint-matching for copy-move forgery detection.
- * TODO: Replace with ORB/SIFT/SuperPoint real keypoint detection model.
- * Currently uses a block-based similarity approach.
- */
 async function detectCopyMove(
   imageDataUrl: string
 ): Promise<{ score: number; details: string }> {
   const img = await loadImage(imageDataUrl);
-  const blockSize = 16; // Block size for comparison
+  const blockSize = 16;
   const canvas = document.createElement("canvas");
 
-  // Scale down for performance
   const maxDim = 400;
   const scale = Math.min(maxDim / img.width, maxDim / img.height, 1);
   canvas.width = Math.floor(img.width * scale);
@@ -249,7 +222,6 @@ async function detectCopyMove(
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const blocks: { x: number; y: number; hash: string }[] = [];
 
-  // Extract block hashes (simple average color + gradient)
   for (let y = 0; y < canvas.height - blockSize; y += blockSize) {
     for (let x = 0; x < canvas.width - blockSize; x += blockSize) {
       let rSum = 0, gSum = 0, bSum = 0;
@@ -263,7 +235,6 @@ async function detectCopyMove(
           gSum += imageData.data[idx + 1];
           bSum += imageData.data[idx + 2];
 
-          // Horizontal gradient
           if (dx < blockSize - 1) {
             rGradX += Math.abs(imageData.data[idx] - imageData.data[idx + 4]);
             gGradX += Math.abs(imageData.data[idx + 1] - imageData.data[idx + 5]);
@@ -276,14 +247,6 @@ async function detectCopyMove(
     }
   }
 
-  // Count duplicate hashes (blocks that look identical)
-  const hashCounts = new Map<string, number>();
-  for (const block of blocks) {
-    hashCounts.set(block.hash, (hashCounts.get(block.hash) || 0) + 1);
-  }
-
-  // Find suspicious duplicates (same hash but different positions)
-  let duplicatePairs = 0;
   const hashBlocks = new Map<string, { x: number; y: number }[]>();
   for (const block of blocks) {
     const existing = hashBlocks.get(block.hash) || [];
@@ -291,9 +254,9 @@ async function detectCopyMove(
     hashBlocks.set(block.hash, existing);
   }
 
+  let duplicatePairs = 0;
   for (const [, blockList] of hashBlocks) {
     if (blockList.length > 1) {
-      // Check that blocks are not adjacent (adjacent blocks naturally look similar)
       for (let i = 0; i < blockList.length; i++) {
         for (let j = i + 1; j < blockList.length; j++) {
           const dist = Math.sqrt(
@@ -301,7 +264,6 @@ async function detectCopyMove(
             Math.pow(blockList[i].y - blockList[j].y, 2)
           );
           if (dist > blockSize * 3) {
-            // Distant blocks with same appearance — suspicious
             duplicatePairs++;
           }
         }
@@ -311,25 +273,75 @@ async function detectCopyMove(
 
   const totalBlocks = blocks.length;
   const suspiciousRatio = totalBlocks > 0 ? duplicatePairs / totalBlocks : 0;
-
-  // Score: 0 (no duplicates) to 100 (many suspicious duplicates)
   const score = Math.min(100, Math.round(suspiciousRatio * 500));
 
-  const details =
-    score < 10
-      ? "No significant duplicated regions detected"
-      : score < 30
-      ? `Minor region similarity detected (${duplicatePairs} suspicious duplicate block pairs) — could be natural repetition`
-      : `Significant region similarity detected (${duplicatePairs} suspicious duplicate block pairs) — possible copy-move forgery`;
+  const details = score < 10
+    ? "No significant duplicated regions detected"
+    : score < 30
+    ? `Minor region similarity detected (${duplicatePairs} suspicious duplicate block pairs) — could be natural repetition`
+    : `Significant region similarity detected (${duplicatePairs} suspicious duplicate block pairs) — possible copy-move forgery`;
 
   return { score, details };
+}
+
+// ─── CNN Patch Classification ───────────────────────────────────────────
+
+/**
+ * Run the trained tampering CNN on document patches.
+ * Falls back to neutral scores if model is not loaded.
+ * TODO: Replace with real patch extraction using OCR bounding boxes.
+ */
+async function runCNNAnalysis(
+  imageDataUrl: string
+): Promise<{ score: number; details: string; patchCount: number }> {
+  // Ensure model is loaded (first call triggers load)
+  if (!isTamperingModelReady()) {
+    await loadTamperingModel();
+  }
+
+  if (!isTamperingModelReady()) {
+    return {
+      score: 50, // Neutral score in mock mode
+      details: "CNN model not available — using mock tampering detection",
+      patchCount: 0,
+    };
+  }
+
+  const img = await loadImage(imageDataUrl);
+  const patches = extractPatchesFromDocument(img);
+
+  if (patches.length === 0) {
+    return {
+      score: 0,
+      details: "No patches extracted for CNN analysis",
+      patchCount: 0,
+    };
+  }
+
+  const probabilities = await predictPatches(patches);
+
+  // Average tampering probability across all patches
+  const avgProb = probabilities.reduce((s, p) => s + p, 0) / probabilities.length;
+  const maxProb = Math.max(...probabilities);
+
+  // Score: map average probability to 0-100
+  // Use a combination of average and max to catch localized tampering
+  const score = Math.min(100, Math.round((avgProb * 0.6 + maxProb * 0.4) * 100));
+
+  const highConfCount = probabilities.filter((p) => p > 0.7).length;
+
+  const details = highConfCount > 0
+    ? `CNN detected tampering in ${highConfCount}/${patches.length} patches (avg confidence: ${(avgProb * 100).toFixed(1)}%, max: ${(maxProb * 100).toFixed(1)}%)`
+    : `CNN analysis: no high-confidence tampering detected across ${patches.length} patches (avg: ${(avgProb * 100).toFixed(1)}%)`;
+
+  return { score, details, patchCount: patches.length };
 }
 
 // ─── Main Tampering Detection Function ──────────────────────────────────
 
 /**
- * Run all tampering detection sub-checks and produce a composite score.
- * TODO: Replace with trained tampering detection ensemble model.
+ * Run all tampering detection sub-checks including real CNN and produce composite score.
+ * Falls back gracefully per-module if models are unavailable.
  */
 export async function detectTampering(
   file: File,
@@ -337,11 +349,12 @@ export async function detectTampering(
 ): Promise<TamperingResult> {
   const startTime = performance.now();
 
-  // Run sub-checks in parallel where possible
-  const [elaResult, metadataResult, copyMoveResult] = await Promise.all([
+  // Run all sub-checks in parallel
+  const [elaResult, metadataResult, copyMoveResult, cnnResult] = await Promise.all([
     computeELA(imageDataUrl),
     analyzeMetadata(file),
     detectCopyMove(imageDataUrl),
+    runCNNAnalysis(imageDataUrl),
   ]);
 
   // Build sub-check results
@@ -349,9 +362,15 @@ export async function detectTampering(
     {
       name: "Error Level Analysis",
       description: "Recompress image and compare pixel differences to detect edits",
-      score: typeof elaResult.score === "string" ? parseInt(elaResult.score as string) : elaResult.score as number,
+      score: elaResult.score,
       details: elaResult.details,
       evidence: elaResult.heatmap,
+    },
+    {
+      name: "CNN Patch Classification",
+      description: "Deep learning analysis of document patches for tampering artifacts",
+      score: cnnResult.score,
+      details: cnnResult.details,
     },
     {
       name: "Metadata / EXIF Analysis",
@@ -367,15 +386,26 @@ export async function detectTampering(
     },
   ];
 
-  // Composite score: weighted average
-  const weights = { ela: 0.50, metadata: 0.20, copyMove: 0.30 };
+  // Weighted composite score
+  // CNN gets highest weight when real model is loaded, otherwise fallback weights
+  const cnnAvailable = isTamperingModelReady();
+
+  const weights = cnnAvailable
+    ? { ela: 0.25, cnn: 0.35, metadata: 0.15, copyMove: 0.25 }
+    : { ela: 0.45, cnn: 0, metadata: 0.20, copyMove: 0.35 };
+
   const overallScore = Math.round(
-    (typeof elaResult.score === "string" ? parseInt(elaResult.score as string) : elaResult.score as number) * weights.ela +
+    elaResult.score * weights.ela +
+    cnnResult.score * weights.cnn +
     metadataResult.score * weights.metadata +
     copyMoveResult.score * weights.copyMove
   );
 
   const metadataFlags = metadataResult.flags;
+
+  if (!cnnAvailable) {
+    metadataFlags.push("⚠ CNN model not loaded — tampering score uses ELA/metadata/copy-move only");
+  }
 
   return {
     overallScore: Math.min(100, overallScore),
